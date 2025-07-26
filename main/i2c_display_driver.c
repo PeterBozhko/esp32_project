@@ -4,12 +4,17 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include <stdlib.h> // для функций calloc и malloc
+#include <font.h>
 
 #define I2C_MASTER_SCL_IO     22
 #define I2C_MASTER_SDA_IO     21
+#define CACHE_SIZE            1024 // 128 * 8
 
+static char cache[CACHE_SIZE];
+static char display_mem[CACHE_SIZE];
 
 static const char *TAG = "i2c_driver";
+
 
 i2c_master_bus_config_t i2c_mst_config = {
     .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -22,6 +27,7 @@ i2c_master_bus_config_t i2c_mst_config = {
 
 i2c_master_bus_handle_t bus_handle;
 i2c_master_dev_handle_t dev_handle;
+uint8_t _counter;
 
 void init_i2c(){
     ESP_LOGI(TAG, "Init I2C");
@@ -139,10 +145,11 @@ void config_i2c(){
     sendCommand(0x14);
     sendCommand(0x20);
     sendCommand(0x00);
-    sendCommand(SET_SEGMENT_REMAP );
+    sendCommand(SET_SEGMENT_REMAP);
     sendCommand(0xC8);
     sendCommand(SET_COM_PINS_HARDWARE_CONFIGURATION);
     sendCommand(0x12);
+    sendCommand(SET_COM_OUTPUT_SCAN_DIRECTION);
     sendCommand(SET_CONTRAST_CONTROL);
     sendCommand(0xCF);
     sendCommand(0xD9); //SETPRECHARGE
@@ -152,8 +159,26 @@ void config_i2c(){
     sendCommand(DISABLE_ENTIRE_DISPLAY_ON);
     sendCommand(SET_NORMAL_DISPLAY);
     sendCommand(DISPLAY_ON);
-
+    _counter = 0;
         // ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data_buf, DATA_LENGTH, -1));
+}
+
+void flush(){
+// позиционирование
+    for (uint8_t page = 0xB0; page < 0xB8; page++){
+        for (uint8_t seg = 0x00; seg < 0x80; seg++){
+            // позиционирование
+            if (cache[(page & 0x0F) * 128 + seg] == display_mem[(page & 0x0F) * 128 + seg]) continue;
+            sendCommand(page);
+            sendCommand(0x0F & seg);
+            sendCommand(0x10 | (seg >> 4));
+            // ESP_LOGI(TAG, "SET page - %d, col - %d, byte - %d", (page & 0x0F), seg, data[(page & 0x0F) * 128 + seg]);
+            // установка цвета
+            sendData(cache[(page & 0x0F) * 128 + seg]);
+            display_mem[(page & 0x0F) * 128 + seg] = cache[(page & 0x0F) * 128 + seg];
+            // vTaskDelay();
+        }
+    }
 }
 
 #define DATA_LENGTH 1024
@@ -174,19 +199,28 @@ void setPic(uint8_t *data){
 }
 
 void clearDisplay(){
-    // позиционирование
-    for (uint8_t page = 0xB0; page < 0xB8; page++){
-        for (uint8_t seg = 0x00; seg < 0x80; seg++){
-            // позиционирование
-            sendCommand(page);
-            sendCommand(0x0F & seg);
-            sendCommand(0x10 | (seg >> 4));
-            // ESP_LOGI(TAG, "SET page - %d, col - %d, byte - %d", (page & 0x0F), seg, data[(page & 0x0F) * 128 + seg]);
-            // установка цвета
-            sendData(0x00);
-            // vTaskDelay();
-        }
+    for(short i = 0; i < CACHE_SIZE; i++){
+        cache[i] = 0x00;
+        display_mem[i] = 0xFF;
+    };
+    flush();
+}
+
+// void setData(uint8_t page, uint8_t col, uint8_t data){
+//     cache[page * 128 + col] = data;
+// }
+
+void drawChar(char c){
+    uint8_t i = 0;
+    _counter %= 1023;
+    
+    while (i < CHARS_COLS_LENGTH) {
+        cache[_counter++] = FONT[c-32][i++];
+        _counter %= 1023;
     }
+    _counter++;
+    _counter %= 1023;
+    flush();
 }
 
 void sendCommand(uint8_t data){
